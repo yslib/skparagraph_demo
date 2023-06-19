@@ -1,0 +1,13 @@
+project(skia_demo)
+cmake_minimum_required(VERSION 3.25)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_MODULE_PATH "~/Code/vgg_runtime/cmake")
+set(CMAK)
+include(VGGVars)
+include(ImportSkia)
+
+find_package(SDL2 REQUIRED)
+add_executable(main main.cpp)
+target_link_libraries(main ${SKIA_LIBS} SDL2)
+set_target_properties(main PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR} BUILD_RPATH ${SKIA_LIB_DIR})
+message(STATUS "${SKIA_LIBS}")
