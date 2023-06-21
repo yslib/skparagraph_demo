@@ -8,6 +8,8 @@
 #include <core/SkData.h>
 #include <core/SkFontMgr.h>
 #include <core/SkPaint.h>
+#include <core/SkScalar.h>
+#include <cstring>
 #include <include/core/SkColorSpace.h>
 #include <include/gpu/GrDirectContext.h>
 #include <include/gpu/ganesh/SkSurfaceGanesh.h>
@@ -22,11 +24,14 @@
 
 #include <filesystem>
 #include <fstream>
+
 #include <modules/skparagraph/include/FontCollection.h>
+#include <modules/skparagraph/include/ParagraphPainter.h>
 #include <modules/skparagraph/include/TextStyle.h>
 #include <modules/skparagraph/include/TypefaceFontProvider.h>
 
 #include "src/core/SkOSFile.h"
+#include <modules/skunicode/include/SkUnicode.h>
 #include <stdexcept>
 #include <tools/Resources.h>
 
@@ -179,51 +184,85 @@ template <typename F> void runOnUtf8(const char *utf8, size_t bytes, F &&f) {
   }
 }
 
-TextStyle createStyle(int fontSize) {
+struct Style {
+  int length = 0;
+  int fontSize = 14;
+  float wordSpacing = 1.0;
+  float letterSpacing = 1.0;
+};
+TextStyle createStyle(const Style &s,
+                      const std::vector<SkString> &fontFamilies) {
   TextStyle txtStyle;
   txtStyle.setColor(SK_ColorBLACK);
   txtStyle.setFontFamilies({SkString("Roboto"), SkString("Noto Color Emoji")});
-  txtStyle.setFontSize(fontSize);
+  txtStyle.setFontSize(s.fontSize);
+  txtStyle.setLetterSpacing(s.letterSpacing);
+  txtStyle.setWordSpacing(s.wordSpacing);
+  txtStyle.setHeight(100);
   return txtStyle;
 }
 
-struct Style {
-  int length = 0;
-  int fontSize = 0;
-};
-
-void drawParagraph(TestCanvas &canvas) {
-  const char *text = "The quick brown fox 🦊 ate a zesty hamburgerfons "
-                     "🍔.\nThe 👩‍👩‍👧‍👧 laughed.";
-
-  const char *text2 = "🏳️‍🌈🌈👨‍👩‍👧‍👦";
-
+std::unique_ptr<ParagraphBuilder>
+fromTab(int count, int fontSize, const std::vector<SkString> &fontFamilies) {
+  // cassert(count < 40);
   ParagraphStyle style;
-  TextStyle txtStyle;
-  txtStyle.setColor(SK_ColorBLACK);
-  txtStyle.setFontFamilies({SkString("Roboto"), SkString("Noto Color Emoji")});
-  txtStyle.setFontSize(54);
-  style.setTextStyle(txtStyle);
-  style.setMaxLines(7);
   style.setEllipsis(u"...");
+  style.setTextAlign(TextAlign::kLeft);
+  TextStyle txtStyle;
+  txtStyle.setFontFamilies(fontFamilies);
+  txtStyle.setFontSize(fontSize);
+  style.setTextAlign(TextAlign::kLeft);
+  style.setTextStyle(txtStyle);
+  auto builder = ParagraphBuilder::make(style, fontCollection);
+  char tabs[40];
+  memset(tabs, '\t', count);
+  tabs[count] = '\0';
+  builder->addText(tabs);
+  return builder;
+}
+
+const std::string text2 = "The quick brown fox 🦊 ate a zesty hamburgerfons "
+                          "🍔.\nThe 👩‍👩‍👧‍👧 laughed.";
+
+// const std::string text2 =
+// "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuffffff"
+//                           "ffffffffffffffffffffffffffffffff";
+std::vector<Style> styles{
+    Style{.length = 6, .fontSize = 20, .wordSpacing = 2.0, .letterSpacing = 10},
+    Style{
+        .length = 2, .fontSize = 80, .wordSpacing = 2.0, .letterSpacing = 3.0},
+    Style{
+        .length = 11, .fontSize = 50, .wordSpacing = 2.0, .letterSpacing = 3.0},
+    Style{.length = 11,
+          .fontSize = 50,
+          .wordSpacing = 2.0,
+          .letterSpacing = 3.0}};
+
+std::vector<SkString> fontFamilies{SkString("Roboto"),
+                                   SkString("Noto Color Emoji")};
+
+std::unique_ptr<ParagraphBuilder>
+fromParagraph(const std::vector<Style> &styles, const std::string &utf8,
+              int maxLines, TextAlign align) {
+  ParagraphStyle style;
+  style.setEllipsis(u"...");
+  style.setTextAlign(align);
+  style.setMaxLines(maxLines);
+  // style.setHeight(40);
 
   auto builder = ParagraphBuilder::make(style, fontCollection);
-
-  std::vector<Style> styles{Style{.length = 6, .fontSize = 20},
-                            Style{.length = 2, .fontSize = 80},
-                            Style{.length = 11, .fontSize = 50}};
-
   int styleIndex = 0;
   if (styles.size() >= 1) {
-    const char *last = text2;
+    const char *last = utf8.c_str();
     int offset = styles[styleIndex].length;
-    int bytes = strlen(text2);
+    int bytes = utf8.size();
     int char_index = 0;
-    runOnUtf8(text2, bytes,
+    runOnUtf8(utf8.c_str(), bytes,
               [&](const char *begin, const char *end, int char_count) {
                 char_index += char_count;
                 if (char_index == offset) {
-                  builder->pushStyle(createStyle(styles[styleIndex].fontSize));
+                  builder->pushStyle(
+                      createStyle(styles[styleIndex], fontFamilies));
                   builder->addText(last, (end - last));
                   builder->pop();
                   styleIndex++;
@@ -232,10 +271,68 @@ void drawParagraph(TestCanvas &canvas) {
                   last = end;
                 }
               });
+    if (last - utf8.c_str() < bytes) {
+      // no style for last text segment
+      TextStyle txtStyle;
+      txtStyle.setColor(SK_ColorBLACK);
+      txtStyle.setFontFamilies(fontFamilies);
+      txtStyle.setFontSize(28);
+      builder->pushStyle(txtStyle);
+      builder->addText(last);
+    }
   }
+
+  return std::move(builder);
+}
+
+struct LayoutState {
+  SkScalar cursorX = 0.f;
+  SkScalar cursorY = 0.f;
+  SkScalar layoutWidth = 500.f;
+
+  void advanceX(SkScalar a) {
+    cursorX += a;
+    layoutWidth -= a;
+  }
+  void advanceY(SkScalar a) { cursorY += a; }
+};
+
+void drawParagraphDebugInfo(TestCanvas &canvas, Paragraph *p,
+                            const LayoutState &state) {
+
+  canvas.get()->save();
+  canvas.get()->translate(state.cursorX, state.cursorY);
+  auto rects =
+      p->getRectsForRange(0, 100, RectHeightStyle::kMax, RectWidthStyle::kMax);
+  auto h = p->getHeight();
+  auto mw = p->getMaxWidth();
+  auto iw = p->getMaxIntrinsicWidth();
+  SkPaint pen;
+  pen.setColor(SK_ColorGREEN);
+  canvas.get()->drawRect(SkRect{0, 0, mw, h}, pen);
+  // pen.setColor(SK_ColorBLUE);
+  // canvas.get()->drawRect(SkRect{0, 0, iw, h}, pen);
+  canvas.drawRects(SK_ColorRED, rects);
+  canvas.get()->restore();
+  p->paint(canvas.get(), state.cursorX, state.cursorY);
+}
+
+void drawParagraph(TestCanvas &canvas) {
+
+  LayoutState state;
+
+  auto builder = fromTab(6, 80, fontFamilies);
   auto p = builder->Build();
-  p->layout(1000);
-  p->paint(canvas.get(), 0, 0);
+  p->layout(state.layoutWidth);
+  auto iw = p->getMaxIntrinsicWidth();
+  drawParagraphDebugInfo(canvas, p.get(), state);
+
+  state.advanceX(iw);
+  builder = fromParagraph(styles, text2, 1000, TextAlign::kLeft);
+  p = builder->Build();
+  p->layout(state.layoutWidth);
+  p->paint(canvas.get(), iw, 0);
+  drawParagraphDebugInfo(canvas, p.get(), state);
 }
 
 int main() {
